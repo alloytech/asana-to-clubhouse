@@ -1,0 +1,20 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+asana = "*"
+jinja2 = "*"
+keyring = "*"
+requests = "*"
+binaryornot = "*"
+
+[dev-packages]
+bpython = "*"
+
+[requires]
+python_version = "3.7"
+
+[scripts]
+importer = 'python importer.py'
