@@ -12,42 +12,15 @@ import keyring
 import requests
 from binaryornot import check
 from jinja2 import Template
-from marshmallow.compat import urlparse
+
+from clubhouse import ClubhouseClient, ClubhouseFile, ClubhouseComment, ClubhouseTask, \
+    ClubhouseStory, ClubhouseLabel, ClubhouseUser
 
 logger = logging.getLogger('importer')
 
 T = TypeVar('T')
 AsanaTask = Dict
 AsanaUser = Dict
-ClubhouseStory = Dict[str, object]
-ClubhouseUser = Dict[str, object]
-ClubhouseComment = Dict[str, str]
-ClubhouseTask = Dict[str, str]
-ClubhouseLabel = Dict[str, str]
-ClubhouseFile = Dict[str, str]
-
-
-class ClubhouseClient(object):
-    def __init__(self, api_key):
-        self.api_key = api_key
-
-    def get(self, *segments, **kwargs):
-        return self._request('get', *segments, **kwargs)
-
-    def post(self, *segments, **kwargs):
-        return self._request('post', *segments, **kwargs)
-
-    def _request(self, method, *segments, **kwargs):
-        # Using beta api to support External Tickets
-        url = path.join('https://api.clubhouse.io/api/beta', *[str(s) for s in segments])
-        prefix = "&" if urlparse.urlparse(url)[4] else "?"
-        response = requests.request(method, url + f"{prefix}token={self.api_key}", **kwargs)
-        if response.status_code not in [200, 201]:
-            logger.error(f"Status code: {response.status_code}, Content: {response.text}")
-            response.raise_for_status()
-        return response.json()
-
-
 description_template = Template("""
 {{ notes|trim }}
 
