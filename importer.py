@@ -3,7 +3,6 @@ import logging
 import mimetypes
 import sys
 import tempfile
-from os import path
 from pprint import pformat
 from typing import Dict, List, Union, TypeVar
 
@@ -37,6 +36,8 @@ resource_subtype == 'comment_edited' %} (Edited){% endif %}
 
 
 class Importer(object):
+    move_message = 'The task moved to '
+
     def __init__(self, args):
         asana.Client.DEFAULT_OPTIONS['page_size'] = 100
         self.asana = asana.Client.access_token(
@@ -57,10 +58,10 @@ class Importer(object):
 
     def import_project(self):
         if self.commit:
-            logger.info('Commit mode enabled. Story(ies) will be created and Tasks will modified.')
+            logger.info('Commit mode enabled. Stories will be created and Tasks will modified.')
         else:
             logger.info(
-                'Preview mode enabled. Story(ies) will be NOT created and Tasks will NOT modified.')
+                'Preview mode enabled. Stories will be NOT created and Tasks will NOT modified.')
 
         for task in self.asana.tasks.find_by_project(self.asana_project_id):
             self.import_task(task)
@@ -138,7 +139,8 @@ class Importer(object):
     def _build_comments(self, task: AsanaTask) -> List[ClubhouseComment]:
         return [self.build_comment(task, comment)
                 for comment in self.asana.stories.find_by_task(task['id'])
-                if comment['type'] != 'system']
+                if comment['type'] != 'system' and not comment['text'].startswith(
+                self.move_message)]
 
     def get_requestor(self, task):
         for story in self.asana.stories.find_by_task(task['id']):
@@ -288,7 +290,7 @@ class Importer(object):
             return
 
         self.asana.tasks.add_comment(task['id'], {
-            'text': f"The task moved to {story['app_url']}"
+            'text': f"{self.move_message}{story['app_url']}"
         })
         self.asana.tasks.add_tag(task['id'], {'tag': self.asana_moved_tag_id})
 
@@ -328,13 +330,13 @@ def _setup_logging():
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="")
+    parser = argparse.ArgumentParser(description="Imports Asana tasks as Clubhouse stories.")
     parser.add_argument('--asana-api-key',
                         default='')
     parser.add_argument('--asana-project-id',
                         help='Source project.')
     parser.add_argument('--asana-moved-tag-id',
-                        help='Tag to apply to moved tasks.')
+                        help='Tag to apply to moved tasks. Must be created in advance.')
     parser.add_argument('--asana-skip-moved-tag',
                         help='Do not tag the task at the end.',
                         action='store_true')
