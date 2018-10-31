@@ -86,7 +86,8 @@ class Importer(object):
         subtasks = flatten(self.get_subtasks(task))
         files = self.import_files(task, subtasks)
         story = self.create_story(task, subtasks, files)
-        logger.info(f"Story created at: {story['app_url']}")
+        if story:
+            logger.info(f"Story created at: {story['app_url']}")
         self.update_asana_task(task, story)
 
     def import_files(self, task: AsanaTask, subtasks: List[AsanaTask]) -> List[ClubhouseFile]:
@@ -171,7 +172,7 @@ class Importer(object):
         prefix = '' if not subtask['level'] else ' * '
         url = self.get_asana_url(subtask)
         return cleanup_dict({
-            "description": f"{prefix}[{subtask['name']}]({url})",
+            "description": f"{prefix}[{subtask['name']}]({url})\n{subtask['notes']}",
             'complete': subtask['completed'],
             'created_at': subtask['created_at'],
             'external_id': self.get_asana_url(subtask),
