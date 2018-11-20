@@ -75,6 +75,9 @@ class Importer(object):
 
     def import_task(self, thin_task: AsanaTask):
         task = self.asana.tasks.find_by_id(thin_task['id'])
+        if task['resource_subtype'] == 'section':
+            logger.info("Skipping section.")
+            return
         for tag in task['tags']:
             moved_tag = int(self.asana_moved_tag_id)
             if tag['id'] == moved_tag:
@@ -193,12 +196,26 @@ class Importer(object):
         # Ensuring that the right day since the due_on is a date without datetime.
         return f"{task['due_on']}T23:59:59Z"
 
+    @staticmethod
+    def get_section(task: AsanaTask) -> Dict:
+        for membership in task['memberships']:
+            if 'section' in membership and membership['section']:
+                url = f"https://app.asana.com/0/{membership['project']['id']}/{membership['section']['id']}"
+                return {
+                    'name': f"Section {membership['section']['name'].replace(':', '').strip()}",
+                    'external_id': url
+                }
+        return {}
+
     def create_story(self, task: AsanaTask, subtasks: List[AsanaTask], files) -> Union[
         ClubhouseStory, None]:
         labels = [{'name': 'Asana'}]
         labels.extend([{'name': label['name']} for label in task['tags']])
         labels.extend([self.build_label_from_projects(project) for project in task['projects']])
         labels.extend(self.build_labels_from_custom_fields(task))
+        section = self.get_section(task)
+        if section:
+            labels.append(section)
         tasks = [cleanup_dict(self.build_task(subtask)) for subtask in subtasks]
         workflow_id = self.clubhouse_complete_workflow_id if task['completed'] else None
         task_url = self.get_asana_url(task)
