@@ -213,9 +213,7 @@ class Importer(object):
         labels.extend([{'name': label['name']} for label in task['tags']])
         labels.extend([self.build_label_from_projects(project) for project in task['projects']])
         labels.extend(self.build_labels_from_custom_fields(task))
-        section = self.get_section(task)
-        if section:
-            labels.append(section)
+        labels.append(self.get_section(task))
         tasks = [cleanup_dict(self.build_task(subtask)) for subtask in subtasks]
         workflow_id = self.clubhouse_complete_workflow_id if task['completed'] else None
         task_url = self.get_asana_url(task)
@@ -230,7 +228,7 @@ class Importer(object):
             'story_type': self.get_story_type(task),
             'description': description_template.render(**task).strip(),
             'external_id': task_url,
-            'labels': labels,
+            'labels': [label for label in labels if label],
             'file_ids': [file['id'] for file in files],
             'follower_ids': self.get_follower_ids(task),
             'name': task['name'].strip(),
