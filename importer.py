@@ -4,7 +4,7 @@ import mimetypes
 import sys
 import tempfile
 from pprint import pformat
-from typing import Dict, List, Union, TypeVar
+from typing import Dict, List, Union, TypeVar, Optional
 
 import asana
 import keyring
@@ -200,15 +200,16 @@ class Importer(object):
     def get_section(task: AsanaTask) -> Dict:
         for membership in task['memberships']:
             if 'section' in membership and membership['section']:
-                url = f"https://app.asana.com/0/{membership['project']['id']}/{membership['section']['id']}"
+                url = f"https://app.asana.com/0/{membership['project']['id']}" \
+                    f"/{ membership['section']['id']}"
                 return {
                     'name': f"Section {membership['section']['name'].replace(':', '').strip()}",
                     'external_id': url
                 }
         return {}
 
-    def create_story(self, task: AsanaTask, subtasks: List[AsanaTask], files) -> Union[
-        ClubhouseStory, None]:
+    def create_story(self, task: AsanaTask, subtasks: List[AsanaTask], files) -> Optional[
+        ClubhouseStory]:
         labels = [{'name': 'Asana'}]
         labels.extend([{'name': label['name']} for label in task['tags']])
         labels.extend([self.build_label_from_projects(project) for project in task['projects']])
@@ -283,7 +284,7 @@ class Importer(object):
                     return feature
         return 'chore'
 
-    def convert_to_clubhouse_user_id(self, user: AsanaUser) -> Union[str, None]:
+    def convert_to_clubhouse_user_id(self, user: AsanaUser) -> Optional[str]:
         if not user:
             return None
         user: ClubhouseUser = self.user_mapping.get(user['id'])
