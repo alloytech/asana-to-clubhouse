@@ -1,5 +1,4 @@
 import logging
-
 from os import path
 from typing import Dict
 from urllib.parse import urlparse
@@ -7,7 +6,7 @@ from urllib.parse import urlparse
 import requests
 
 # Using beta api to support External Tickets
-API_ENDPOINT = 'https://api.clubhouse.io/api/beta'
+API_ENDPOINT = 'https://api.clubhouse.io/api/v2'
 
 ClubhouseStory = Dict[str, object]
 ClubhouseUser = Dict[str, object]
@@ -20,7 +19,8 @@ logger = logging.getLogger('clubhouse')
 
 
 class ClubhouseClient(object):
-    def __init__(self, api_key):
+    def __init__(self, api_key, ignored_status_codes=None):
+        self.ignored_status_codes = ignored_status_codes or []
         self.api_key = api_key
 
     def get(self, *segments, **kwargs):
@@ -39,7 +39,7 @@ class ClubhouseClient(object):
         url = path.join(API_ENDPOINT, *[str(s) for s in segments])
         prefix = "&" if urlparse(url)[4] else "?"
         response = requests.request(method, url + f"{prefix}token={self.api_key}", **kwargs)
-        if response.status_code > 299:
+        if response.status_code > 299 and response.status_code not in self.ignored_status_codes:
             logger.error(f"Status code: {response.status_code}, Content: {response.text}")
             response.raise_for_status()
         if response.status_code == 204:

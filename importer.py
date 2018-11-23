@@ -1,8 +1,10 @@
 import argparse
 import logging
 import mimetypes
+import re
 import sys
 import tempfile
+from concurrent.futures.thread import ThreadPoolExecutor
 from pprint import pformat
 from typing import Dict, List, Union, TypeVar, Optional
 
@@ -38,7 +40,12 @@ resource_subtype == 'comment_edited' %} (Edited){% endif %}
 class Importer(object):
     move_message = 'The task moved to '
 
+    # When resolving mentions the users's task list which is used for mentions
+    # is different than the asana user id (can varies by 1M to 2M).
+    mention_id_prefix_length = 8
+
     def __init__(self, args):
+        self.ignore_email_domains = args.ignore_email_account_domain
         asana.Client.DEFAULT_OPTIONS['page_size'] = 100
         self.asana = asana.Client.access_token(
             args.asana_api_key or get_secret_from_keyring('asana'))
@@ -54,7 +61,35 @@ class Importer(object):
         self.clubhouse_complete_workflow_id = args.clubhouse_complete_workflow_id
 
         self.commit = args.commit
-        self.user_mapping = self.build_asana_to_clubhouse_user_mapping()
+        asana_users = self.get_asana_users()
+        clubhouse_members = self.clubhouse.get('members')
+        self.user_mapping = self.build_asana_to_clubhouse_user_mapping(
+            asana_users, clubhouse_members)
+        self.user_mention_mapping = self.build_asana_mention_to_clubhouse(
+            asana_users, clubhouse_members)
+        self.workers = args.workers
+
+    def parse_email(self, email):
+        if self.ignore_email_domains:
+            return email.split('@')[0].strip()
+        return email.strip()
+
+    def build_asana_mention_to_clubhouse(self, asana_users, clubhouse_members):
+        clubhouse_members_by_email = {
+            self.parse_email(u['profile']['email_address']): u for u in clubhouse_members}
+        return {
+            str(user['id'])[0:self.mention_id_prefix_length]:
+                {'asana': user, 'clubhouse':
+                    clubhouse_members_by_email.get(self.parse_email(user['email']))}
+            for user in asana_users}
+
+    def build_asana_to_clubhouse_user_mapping(self, asana_users, clubhouse_members) -> Dict[
+        str, str]:
+        asana_email_to_user_ids = {
+            self.parse_email(user['email']): user['id'] for user in asana_users}
+        return {
+            asana_email_to_user_ids.get(self.parse_email(user['profile']['email_address'])): user
+            for user in clubhouse_members}
 
     def import_project(self):
         if self.commit:
@@ -63,54 +98,59 @@ class Importer(object):
             logger.info(
                 'Preview mode enabled. Stories will be NOT created and Tasks will NOT modified.')
 
+        executor = ThreadPoolExecutor(max_workers=self.workers)
         for task in self.asana.tasks.find_by_project(self.asana_project_id):
-            self.import_task(task)
+            executor.submit(self.import_task, task)
 
-    def build_asana_to_clubhouse_user_mapping(self) -> Dict[str, str]:
+    def get_asana_users(self):
         workspaces_id = self.asana.users.me()['workspaces'][0]['id']
-        asana_users = self.asana.users.find_by_workspace(workspaces_id, {"opt_fields": 'email'})
-        asana_email_to_user_ids = {user['email']: user['id'] for user in asana_users}
-        return {asana_email_to_user_ids.get(user['profile']['email_address']): user for user in
-                self.clubhouse.get('members')}
+        return list(self.asana.users.find_by_workspace(workspaces_id, {"opt_fields": 'email'}))
 
     def import_task(self, thin_task: AsanaTask):
-        task = self.asana.tasks.find_by_id(thin_task['id'])
-        if task['resource_subtype'] == 'section':
-            logger.info("Skipping section.")
-            return
-        for tag in task['tags']:
-            moved_tag = int(self.asana_moved_tag_id)
-            if tag['id'] == moved_tag:
-                message = "Task {id}: '{name}' already migrated " \
-                          "because it is tagged with '{moved_tag}'"
-                logger.info(message.format(moved_tag=moved_tag, **task))
+        try:
+            task = self.asana.tasks.find_by_id(thin_task['id'])
+            if not task['name'].strip():
+                logger.info("Skipping task with no name.")
                 return
+            if task['resource_subtype'] == 'section':
+                logger.info("Skipping section.")
+                return
+            for tag in task['tags']:
+                moved_tag = int(self.asana_moved_tag_id)
+                if tag['id'] == moved_tag:
+                    message = "Task {id}: '{name}' already migrated " \
+                              "because it is tagged with '{moved_tag}'"
+                    logger.info(message.format(moved_tag=moved_tag, **task))
+                    return
 
-        subtasks = flatten(self.get_subtasks(task))
-        files = self.import_files(task, subtasks)
-        story = self.create_story(task, subtasks, files)
-        if story:
-            logger.info(f"Story created at: {story['app_url']}")
-        self.update_asana_task(task, story)
+            subtasks = flatten(self.get_subtasks(task))
+            files = self.import_files(task, subtasks)
+            story = self.create_story(task, subtasks, files)
+            if story:
+                logger.info(f"Story created at: {story['app_url']}")
+            self.update_asana_task(task, story)
+        except:
+            logger.exception("Failure. Stopping!")
+            exit(255)
 
     def import_files(self, task: AsanaTask, subtasks: List[AsanaTask]) -> List[ClubhouseFile]:
         return flatten([self._import_files(t) for t in [task] + subtasks])
 
     def _import_files(self, task):
         if not self.commit:
-            logging.debug("Skipping fetching and uploading files ...")
+            logger.debug("Skipping fetching and uploading files ...")
             return [{'id': "fake-guid"}]
 
         options = {'opt_fields': 'name,download_url'}
         created_files: List[ClubhouseFile] = []
         for attachment in self.asana.attachments.find_by_task(task['id'], options):
-            filename = attachment['name']
+            filename = attachment['name'].strip()
             with tempfile.SpooledTemporaryFile(suffix=filename, max_size=10 * 1024 * 1024) as fp:
-                logging.info(f"Fetching {filename} for {task['id']} ...")
+                logger.info(f"Fetching {filename} for {task['id']} ...")
                 url = attachment['download_url']
                 fp.write(requests.get(url).content)
                 fp.seek(0)
-                logging.info(f"Uploading {filename} ...")
+                logger.info(f"Uploading {filename} ...")
                 content_type, _ = mimetypes.guess_type(filename)
                 text_plain = 'text/plain'
                 if not content_type or content_type == text_plain:
@@ -150,11 +190,26 @@ class Importer(object):
         for story in self.asana.stories.find_by_task(task['id']):
             return self.convert_to_clubhouse_user_id(story['created_by'])
 
+    def _mention_replacer(self, match):
+        match = match.group()
+        # Checks the first 8 characters of
+        start = 24
+        id_prefix = match[start:start + self.mention_id_prefix_length]
+        user = self.user_mention_mapping.get(id_prefix)
+        if not user:
+            return f"[User unknown]({match})"
+        if not user['clubhouse']:
+            return f"[{user['asana']['name']}]({match})"
+        matched_id = user['clubhouse']['profile']['id']
+        mention_name = user['clubhouse']['profile']['mention_name']
+        return f"[@{ mention_name }](clubhouse:\/\/members\/{ matched_id})"
+
     def build_comment(self, task: AsanaTask, comment: Dict) -> ClubhouseComment:
         user_id = self.convert_to_clubhouse_user_id(comment['created_by'])
         text = comment_template.render(user_found=(user_id is not None),
                                        task=task,
                                        url=self.get_asana_url(task), **comment).strip()
+        text = re.sub(r'https://app\.asana\.com/0/(\d+)/list', self._mention_replacer, text)
         return cleanup_dict(
             {
                 'author_id': user_id,
@@ -163,12 +218,6 @@ class Importer(object):
                 'text': text
             }
         )
-
-    def build_external_ticket(self, task: Dict) -> Dict:
-        return {
-            'external_url': self.get_asana_url(task),
-            'external_id': str(task['id'])
-        }
 
     def build_task(self, subtask: AsanaTask) -> ClubhouseTask:
         # Used to makes nice markdown bullet points if subtask of a subtask
@@ -203,14 +252,14 @@ class Importer(object):
                 url = f"https://app.asana.com/0/{membership['project']['id']}" \
                     f"/{ membership['section']['id']}"
                 return {
-                    'name': f"Section {membership['section']['name'].replace(':', '').strip()}",
+                    'name': membership['section']['name'].replace(':', '').strip(),
                     'external_id': url
                 }
         return {}
 
     def create_story(self, task: AsanaTask, subtasks: List[AsanaTask], files) -> Optional[
         ClubhouseStory]:
-        labels = [{'name': 'Asana'}]
+        labels = [{'name': 'From Asana'}]
         labels.extend([{'name': label['name']} for label in task['tags']])
         labels.extend([self.build_label_from_projects(project) for project in task['projects']])
         labels.extend(self.build_labels_from_custom_fields(task))
@@ -218,7 +267,6 @@ class Importer(object):
         tasks = [cleanup_dict(self.build_task(subtask)) for subtask in subtasks]
         workflow_id = self.clubhouse_complete_workflow_id if task['completed'] else None
         task_url = self.get_asana_url(task)
-        external_tickets = [self.build_external_ticket(task)]
         completed_at = task['completed_at']
         story = cleanup_dict({
             'archived': True if completed_at else False,
@@ -237,12 +285,11 @@ class Importer(object):
             'project_id': self.clubhouse_project_id,
             'requested_by_id': self.get_requestor(task),
             'tasks': tasks,
-            'external_tickets': external_tickets,
             'updated_at': task['modified_at'],
             'workflow_state_id': workflow_id
         })
 
-        logger.info(pformat(story))
+        logger.debug(pformat(story))
 
         if not self.commit:
             logger.debug("Skipping creating story ...")
@@ -337,10 +384,11 @@ def _flatten(container: List[Union[T, List]]) -> List[T]:
             yield i
 
 
-def _setup_logging():
-    logger.setLevel(logging.DEBUG)
+def _setup_logging(verbose):
+    level = logging.DEBUG if verbose else logging.INFO
+    logger.setLevel(level)
     ch = logging.StreamHandler(sys.stdout)
-    ch.setLevel(logging.DEBUG)
+    ch.setLevel(level)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     ch.setFormatter(formatter)
     logger.addHandler(ch)
@@ -367,6 +415,17 @@ if __name__ == '__main__':
                         default=False,
                         help='Changes things. Be careful!',
                         action='store_true')
+    parser.add_argument('--workers',
+                        default=12)
+    parser.add_argument('-v', '---verbose',
+                        default=False,
+                        action='store_true')
 
-    _setup_logging()
-    Importer(parser.parse_args()).import_project()
+    parser.add_argument('---ignore-email-account-domain',
+                        default=False,
+                        help="Ignore the domain of users' emails.",
+                        action='store_true')
+
+    args = parser.parse_args()
+    _setup_logging(args.verbose)
+    Importer(args).import_project()
