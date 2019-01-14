@@ -368,7 +368,7 @@ def cleanup_list(l: List) -> List:
 
 
 def get_secret_from_keyring(service: str) -> str:
-    return keyring.get_password('alloy', service)
+    return keyring.get_password('external', service)
 
 
 def flatten(container: List[Union[List, T]]) -> List[T]:

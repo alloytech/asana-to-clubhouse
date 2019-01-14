@@ -7,7 +7,7 @@ from clubhouse import ClubhouseClient
 
 def delete_comment(start, end, message):
     global story_id, comment
-    c = ClubhouseClient(keyring.get_password('alloy', 'clubhouse'))
+    c = ClubhouseClient(keyring.get_password('external', 'clubhouse'))
     for story_id in range(start, end):
         print(f"Checking story {story_id}")
         comments = c.get('stories', story_id).get('comments')
